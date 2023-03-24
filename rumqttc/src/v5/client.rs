@@ -7,7 +7,7 @@ use super::{ConnectionError, Event, EventLoop, MqttOptions, Request};
 use crate::valid_topic;
 
 use bytes::Bytes;
-use flume::{SendError, Sender, TrySendError};
+use flume::{Receiver, SendError, Sender, TrySendError};
 use futures::FutureExt;
 use tokio::runtime::{self, Runtime};
 use tokio::time::timeout;
@@ -56,6 +56,23 @@ impl AsyncClient {
         let client = AsyncClient { request_tx };
 
         (client, eventloop)
+    }
+
+    pub async fn new_self_polling(
+        options: MqttOptions,
+        cap: usize,
+    ) -> (AsyncClient, Receiver<Result<Event, ConnectionError>>) {
+        let (client, mut eventloop) = Self::new(options, cap);
+        let (events_tx, events_rx) = flume::bounded(cap);
+
+        tokio::spawn(async move {
+            loop {
+                let event = eventloop.poll().await;
+                events_tx.send_async(event).await.unwrap();
+            }
+        });
+
+        (client, events_rx)
     }
 
     /// Create a new `AsyncClient` from a pair of async channel `Sender`s. This is mostly useful for
