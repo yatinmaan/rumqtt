@@ -116,6 +116,67 @@ impl fmt::Debug for Publish {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct PublishPartial {
+    pub dup: bool,
+    pub qos: QoS,
+    pub retain: bool,
+    pub pkid: u16,
+}
+
+impl PublishPartial {
+    pub fn read_partial(fixed_header: FixedHeader, mut bytes: Bytes) -> Result<Self, Error> {
+        let qos = qos((fixed_header.byte1 & 0b0110) >> 1)?;
+        let dup = (fixed_header.byte1 & 0b1000) != 0;
+        let retain = (fixed_header.byte1 & 0b0001) != 0;
+
+        let variable_header_index = fixed_header.fixed_header_len;
+        bytes.advance(variable_header_index);
+
+        let topic_len = read_u16(&mut bytes)? as usize;
+
+        // Prevent attacks with wrong remaining length. This method is used in
+        // `packet.assembly()` with (enough) bytes to frame packet. Ensures that
+        // reading variable len string or bytes doesn't cross promised boundary
+        // with `read_fixed_header()`
+        if topic_len > bytes.len() {
+            return Err(Error::BoundaryCrossed(topic_len));
+        }
+
+        // Skip the topic
+        bytes.advance(topic_len);
+
+        // Packet identifier exists where QoS > 0
+        let pkid = match qos {
+            QoS::AtMostOnce => 0,
+            QoS::AtLeastOnce | QoS::ExactlyOnce => read_u16(&mut bytes)?,
+        };
+
+        if qos != QoS::AtMostOnce && pkid == 0 {
+            return Err(Error::PacketIdZero);
+        }
+
+        let partial = PublishPartial {
+            dup,
+            retain,
+            qos,
+            pkid,
+        };
+
+        Ok(partial)
+    }
+}
+
+impl fmt::Debug for PublishPartial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Qos = {:?}, Retain = {}, Pkid = {:?}",
+            self.qos, self.retain, self.pkid,
+        )
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

@@ -171,6 +171,7 @@ impl MqttState {
             Incoming::PubRec(pubrec) => self.handle_incoming_pubrec(pubrec),
             Incoming::PubRel(pubrel) => self.handle_incoming_pubrel(pubrel),
             Incoming::PubComp(pubcomp) => self.handle_incoming_pubcomp(pubcomp),
+            Incoming::PublishPartial(partial) => self.handle_incoming_publish_partial(partial),
             _ => {
                 error!("Invalid incoming packet = {:?}", packet);
                 return Err(StateError::WrongPacket);
@@ -207,6 +208,34 @@ impl MqttState {
             }
             QoS::ExactlyOnce => {
                 let pkid = publish.pkid;
+                self.incoming_pub[pkid as usize] = Some(pkid);
+
+                if !self.manual_acks {
+                    let pubrec = PubRec::new(pkid);
+                    self.outgoing_pubrec(pubrec)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn handle_incoming_publish_partial(
+        &mut self,
+        partial: &PublishPartial,
+    ) -> Result<(), StateError> {
+        let qos = partial.qos;
+
+        match qos {
+            QoS::AtMostOnce => Ok(()),
+            QoS::AtLeastOnce => {
+                if !self.manual_acks {
+                    let puback = PubAck::new(partial.pkid);
+                    self.outgoing_puback(puback)?;
+                }
+                Ok(())
+            }
+            QoS::ExactlyOnce => {
+                let pkid = partial.pkid;
                 self.incoming_pub[pkid as usize] = Some(pkid);
 
                 if !self.manual_acks {

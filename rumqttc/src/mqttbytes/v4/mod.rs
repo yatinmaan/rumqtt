@@ -34,6 +34,7 @@ pub enum Packet {
     Connect(Connect),
     ConnAck(ConnAck),
     Publish(Publish),
+    PublishPartial(PublishPartial),
     PubAck(PubAck),
     PubRec(PubRec),
     PubRel(PubRel),
@@ -49,7 +50,28 @@ pub enum Packet {
 
 /// Reads a stream of bytes and extracts next MQTT packet out of it
 pub fn read(stream: &mut BytesMut, max_size: usize) -> Result<Packet, Error> {
-    let fixed_header = check(stream.iter(), max_size)?;
+    let fixed_header = match check(stream.iter(), max_size) {
+        Ok(fixed_header) => fixed_header,
+        Err(Error::PayloadSizeLimitExceeded(err)) => {
+
+            // Return a Partial Publish packet if the packet is too big
+            // TODO: Only do this when a config flag for `auto_ack_large_pkts` is set
+            let fixed_header = check(stream.iter(), usize::MAX)?;
+            if let PacketType::Publish = fixed_header.packet_type()? {
+                let packet = stream.split_to(fixed_header.frame_length());
+                let packet = packet.freeze();
+                return Ok(Packet::PublishPartial(PublishPartial::read_partial(
+                    fixed_header,
+                    packet,
+                )?));
+            } else {
+                return Err(Error::PayloadSizeLimitExceeded(err));
+            }
+        }
+        Err(err) => {
+            return Err(err);
+        }
+    };
 
     // Test with a stream with exactly the size to check border panics
     let packet = stream.split_to(fixed_header.frame_length());
