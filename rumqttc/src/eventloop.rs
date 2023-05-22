@@ -383,6 +383,11 @@ async fn network_connect(
                 .method(http::Method::GET)
                 .uri(options.broker_addr.as_str())
                 .header("Sec-WebSocket-Protocol", "mqttv3.1")
+                .header("Sec-WebSocket-Key", "wololo")
+                .header("Host", "wololo")
+                .header("Sec-WebSocket-Version", "13")
+                .header("Connection", "Upgrade")
+                .header("Upgrade", "Websocket")
                 .body(())?;
 
             let (socket, _) = async_tungstenite::tokio::client_async(request, tcp_stream).await?;
