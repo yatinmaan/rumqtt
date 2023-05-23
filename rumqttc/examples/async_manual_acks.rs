@@ -4,14 +4,14 @@ use rumqttc::{self, AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
 use std::error::Error;
 use std::time::Duration;
 
-fn create_conn() -> (AsyncClient, EventLoop) {
-    let mut mqttoptions = MqttOptions::new("test-1", "localhost", 1883);
+fn create_conn() -> Result<(AsyncClient, EventLoop), Box<dyn Error>> {
+    let mut mqttoptions = MqttOptions::new("test-1", "mqtt://localhost:1883")?;
     mqttoptions
         .set_keep_alive(Duration::from_secs(5))
         .set_manual_acks(true)
         .set_clean_session(false);
 
-    AsyncClient::new(mqttoptions, 10)
+    Ok(AsyncClient::new(mqttoptions, 10))
 }
 
 #[tokio::main(worker_threads = 1)]
@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     pretty_env_logger::init();
 
     // create mqtt connection with clean_session = false and manual_acks = true
-    let (client, mut eventloop) = create_conn();
+    let (client, mut eventloop) = create_conn()?;
 
     // subscribe example topic
     client
@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // create new broker connection
-    let (client, mut eventloop) = create_conn();
+    let (client, mut eventloop) = create_conn()?;
 
     loop {
         // previously published messages should be republished after reconnection.

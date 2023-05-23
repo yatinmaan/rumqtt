@@ -17,7 +17,7 @@ async fn main() {
 }
 
 pub async fn start(id: &str, payload_size: usize, count: usize) -> Result<(), Box<dyn Error>> {
-    let mut mqttoptions = MqttOptions::new(id, "localhost", 1883);
+    let mut mqttoptions = MqttOptions::new(id, "mqtt://localhost:1883")?;
     mqttoptions.set_keep_alive(Duration::from_secs(20));
     mqttoptions.set_inflight(100);
 

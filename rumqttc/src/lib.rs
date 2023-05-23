@@ -13,7 +13,7 @@
 //! use std::time::Duration;
 //! use std::thread;
 //!
-//! let mut mqttoptions = MqttOptions::new("rumqtt-sync", "test.mosquitto.org", 1883);
+//! let mut mqttoptions = MqttOptions::new("rumqtt-sync", "mqtt://test.mosquitto.org:1883").unwrap();
 //! mqttoptions.set_keep_alive(Duration::from_secs(5));
 //!
 //! let (mut client, mut connection) = Client::new(mqttoptions, 10);
@@ -40,7 +40,7 @@
 //!
 //! # #[tokio::main(worker_threads = 1)]
 //! # async fn main() {
-//! let mut mqttoptions = MqttOptions::new("rumqtt-async", "test.mosquitto.org", 1883);
+//! let mut mqttoptions = MqttOptions::new("rumqtt-async", "mqtt://test.mosquitto.org:1883").unwrap();
 //! mqttoptions.set_keep_alive(Duration::from_secs(5));
 //!
 //! let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
@@ -98,10 +98,13 @@
 #[macro_use]
 extern crate log;
 
-use std::fmt::{self, Debug, Formatter};
 #[cfg(feature = "use-rustls")]
 use std::sync::Arc;
 use std::time::Duration;
+use std::{
+    convert::TryInto,
+    fmt::{self, Debug, Formatter},
+};
 
 mod client;
 mod eventloop;
@@ -358,6 +361,52 @@ impl From<ClientConfig> for TlsConfiguration {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum AddressError {
+    #[error("Unsupported URL scheme.")]
+    Scheme,
+
+    #[error("Couldn't parse option from url: {0}")]
+    Parse(#[from] url::ParseError),
+}
+
+pub enum Address {
+    // TTODO add file address
+    Tcp(TcpAddress),
+    #[cfg(feature = "websocket")]
+    Ws(WsAddress),
+}
+
+impl std::convert::TryFrom<&str> for Address {
+    type Error = AddressError;
+    fn try_from(address: &str) -> Result<Self, Self::Error> {
+        let address = url::Url::parse(address)?;
+        match address.scheme() {
+            "tcp" | "ssl" | "mqtts" | "mqtt" => {
+                let host = address.host_str().unwrap().to_string();
+                let port = address.port().unwrap_or(80);
+                Ok(Self::Tcp(TcpAddress { host, port }))
+            }
+            #[cfg(feature = "websocket")]
+            "ws" | "wss" => {
+                let host = address.as_str().to_string();
+                Ok(Self::Ws(WsAddress { host }))
+            }
+            _ => Err(Self::Error::Scheme),
+        }
+    }
+}
+
+pub struct TcpAddress {
+    host: String,
+    port: u16,
+}
+
+#[cfg(feature = "websocket")]
+pub struct WsAddress {
+    host: String,
+}
+
 /// Provides a way to configure low level network connection configurations
 #[derive(Clone, Copy, Default)]
 pub struct NetworkOptions {
@@ -444,27 +493,40 @@ pub struct MqttOptions {
 impl MqttOptions {
     /// Create an [`MqttOptions`] object that contains default values for all settings other than
     /// - id: A string to identify the device connecting to a broker
-    /// - host: The broker's domain name or IP address
-    /// - port: The port number on which broker must be listening for incoming connections
+    /// - address: The address on which broker is listening for incoming connections
     ///
     /// ```
     /// # use rumqttc::MqttOptions;
-    /// let options = MqttOptions::new("123", "localhost", 1883);
+    /// let options = MqttOptions::new("123", "mqtt://localhost:1883").unwrap();
     /// ```
     /// NOTE: you are not allowed to use an id that starts with a whitespace or is empty.
     /// for example, the following code would panic:
     /// ```should_panic
     /// # use rumqttc::MqttOptions;
-    /// let options = MqttOptions::new("", "localhost", 1883);
+    /// let options = MqttOptions::new("", "mqtt://localhost:1883").unwrap();
     /// ```
-    pub fn new<S: Into<String>, T: Into<String>>(id: S, host: T, port: u16) -> MqttOptions {
+    pub fn new<S: Into<String>, A: TryInto<Address>>(
+        id: S,
+        address: A,
+    ) -> Result<MqttOptions, AddressError>
+    where
+        AddressError: From<<A as TryInto<Address>>::Error>,
+    {
         let id = id.into();
+        let address = address.try_into()?;
         if id.starts_with(' ') || id.is_empty() {
             panic!("Invalid client id");
+            // TTODO return `
         }
 
-        MqttOptions {
-            broker_addr: host.into(),
+        let (broker_addr, port) = match address {
+            Address::Tcp(tcp) => (tcp.host, tcp.port),
+            #[cfg(feature = "websocket")]
+            Address::Ws(ws) => (ws.host, 80),
+        };
+
+        Ok(MqttOptions {
+            broker_addr,
             port,
             transport: Transport::tcp(),
             keep_alive: Duration::from_secs(60),
@@ -481,7 +543,7 @@ impl MqttOptions {
             manual_acks: false,
             #[cfg(feature = "proxy")]
             proxy: None,
-        }
+        })
     }
 
     #[cfg(feature = "url")]
@@ -852,18 +914,21 @@ impl Debug for MqttOptions {
 
 #[cfg(test)]
 mod test {
+
     use super::*;
 
     #[test]
     #[should_panic]
     fn client_id_startswith_space() {
-        let _mqtt_opts = MqttOptions::new(" client_a", "127.0.0.1", 1883).set_clean_session(true);
+        let _mqtt_opts = MqttOptions::new(" client_a", "mqtt://127.0.0.1:1883")
+            .unwrap()
+            .set_clean_session(true);
     }
 
     #[test]
     #[cfg(all(feature = "use-rustls", feature = "websocket"))]
     fn no_scheme() {
-        let mut mqttoptions = MqttOptions::new("client_a", "a3f8czas.iot.eu-west-1.amazonaws.com/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=MyCreds%2F20201001%2Feu-west-1%2Fiotdevicegateway%2Faws4_request&X-Amz-Date=20201001T130812Z&X-Amz-Expires=7200&X-Amz-Signature=9ae09b49896f44270f2707551581953e6cac71a4ccf34c7c3415555be751b2d1&X-Amz-SignedHeaders=host", 443);
+        let mut mqttoptions = MqttOptions::new("client_a", "mqtt://a3f8czas.iot.eu-west-1.amazonaws.com/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=MyCreds%2F20201001%2Feu-west-1%2Fiotdevicegateway%2Faws4_request&X-Amz-Date=20201001T130812Z&X-Amz-Expires=7200&X-Amz-Signature=9ae09b49896f44270f2707551581953e6cac71a4ccf34c7c3415555be751b2d1&X-Amz-SignedHeaders=host").unwrap();
 
         mqttoptions.set_transport(crate::Transport::wss(Vec::from("Test CA"), None, None));
 
@@ -880,7 +945,7 @@ mod test {
             panic!("Unexpected transport!");
         }
 
-        assert_eq!(mqttoptions.broker_addr, "a3f8czas.iot.eu-west-1.amazonaws.com/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=MyCreds%2F20201001%2Feu-west-1%2Fiotdevicegateway%2Faws4_request&X-Amz-Date=20201001T130812Z&X-Amz-Expires=7200&X-Amz-Signature=9ae09b49896f44270f2707551581953e6cac71a4ccf34c7c3415555be751b2d1&X-Amz-SignedHeaders=host");
+        assert_eq!(mqttoptions.broker_addr, "mqtt://a3f8czas.iot.eu-west-1.amazonaws.com/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=MyCreds%2F20201001%2Feu-west-1%2Fiotdevicegateway%2Faws4_request&X-Amz-Date=20201001T130812Z&X-Amz-Expires=7200&X-Amz-Signature=9ae09b49896f44270f2707551581953e6cac71a4ccf34c7c3415555be751b2d1&X-Amz-SignedHeaders=host");
     }
 
     #[test]
@@ -946,6 +1011,8 @@ mod test {
     #[test]
     #[should_panic]
     fn no_client_id() {
-        let _mqtt_opts = MqttOptions::new("", "127.0.0.1", 1883).set_clean_session(true);
+        let _mqtt_opts = MqttOptions::new("", "mqtt://127.0.0.1:1883")
+            .unwrap()
+            .set_clean_session(true);
     }
 }
